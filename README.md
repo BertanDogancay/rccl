@@ -11,7 +11,7 @@ The collective operations are implemented using ring and tree algorithms and hav
 ## Requirements
 
 1. ROCm supported GPUs
-2. ROCm stack installed on the system (HIP runtime & HCC or HIP-Clang)
+2. ROCm stack installed on the system (HIP runtime & HCC or HIP-Clang).  Use matching ROCm version for tagged releases, or latest ROCm for develop branch
 
 ## Quickstart RCCL Build
 

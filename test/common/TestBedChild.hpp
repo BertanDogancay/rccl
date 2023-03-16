@@ -12,6 +12,7 @@
 #include "rccl/rccl.h"
 
 #define MAX_RANKS 32
+#define MAX_LOOP_COUNTER 400000000000
 namespace RcclUnitTesting
 {
   class TestBedChild
@@ -63,9 +64,11 @@ namespace RcclUnitTesting
     int totalRanks;                                     // Total ranks
     int rankOffset;                                     // Global rank offset for this child
     int numCollectivesInGroup;                          // # of collectives to run per group call
+    bool useBlocking;                                   // RCCL communication with blocking or non-blocking option
+    int numStreamsPerGroup;                             // # of different streams allowed per group call
     std::vector<ncclComm_t> comms;                      // RCCL communicators for each rank
     std::vector<int> deviceIds;                         // Device IDs for each rank
-    std::vector<hipStream_t> streams;                   // Streams for executing collectives
+    std::vector<std::vector<hipStream_t>> streams;      // Streams for executing collectives
     std::vector<std::vector<CollectiveArgs>> collArgs;  // Info for each collective for each rank
 
     // Constructor

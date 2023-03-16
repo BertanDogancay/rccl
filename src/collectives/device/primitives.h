@@ -15,11 +15,12 @@
 #define NCCL_SPINS_BEFORE_CHECK_ABORT 1000000
 
 #define barrier_by_group() do { \
-  if (nthreads == NCCL_MAX_NTHREADS) \
+  const int w = threadIdx.x/WARP_SIZE; \
+  const int wid = threadIdx.x%WARP_SIZE; \
+  __threadfence(); \
+  if (nthreads == NCCL_MAX_NTHREADS) { \
     __syncthreads(); \
-  else { \
-    const int w = threadIdx.x/WARP_SIZE; \
-    const int wid = threadIdx.x%WARP_SIZE; \
+  } else { \
     if (wid == 0) { \
       barrier_next[w] += nthreads/WARP_SIZE; \
       atomicAdd((unsigned long long *)barriers, 1); \

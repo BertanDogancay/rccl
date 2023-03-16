@@ -1,6 +1,7 @@
 /*************************************************************************
  * Copyright (c) 2016-2022, NVIDIA CORPORATION. All rights reserved.
- * Modifications Copyright (c) 2019-2022 Advanced Micro Devices, Inc. All rights reserved.
+ * Modifications Copyright (c) 2019-2023 Advanced Micro Devices, Inc. All rights reserved.
+ * Modifications Copyright (c) Microsoft Corporation. Licensed under the MIT License.
  *
  * See LICENSE.txt for license information
  ************************************************************************/
@@ -8,6 +9,8 @@
 #if defined(ENABLE_NPKIT)
 #include "npkit/npkit.h"
 #endif
+
+#include "msccl/msccl_struct.h"
 
 template<typename T, typename RedOp, typename Fan, int Direct,
          int SlicePerChunk, int StepPerSlice, int Unroll, int P2p>
@@ -90,7 +93,10 @@ private:
   inline __device__ bool checkAbort(int &spins) {
     spins++;
     if (!(flags & Aborted) && spins == NCCL_SPINS_BEFORE_CHECK_ABORT) {
-      flags |= atomicAdd_system((unsigned int *)ncclShmem.comm.abortFlag, 0) ? Aborted : 0;
+      if (atomicAdd_system((unsigned int *)ncclShmem.comm.abortFlag, 0)) {
+        flags |= Aborted;
+        ncclShmem.aborted = 1;
+      }
       spins = 0;
     }
     return flags & Aborted;
@@ -106,7 +112,7 @@ private:
       int spins = 0;
       while (connStepCache + (isSendNotRecv ? NCCL_STEPS : 0) < step + StepPerSlice) {
         __builtin_amdgcn_s_sleep(1);
-        connStepCache = atomicAdd_system((unsigned long long *)connStepPtr, 0);
+        connStepCache = atomicAdd((unsigned long long *)connStepPtr, 0);
         if (checkAbort(spins)) break;
         //if (spins == 0) printf("r=%d b=%d t=%d SPUN OUT got=%d want=%d\n", ncclShmem.comm.rank, blockIdx.x, threadIdx.x, int(connStepCache + (isSendNotRecv ? NCCL_STEPS : 0)), int(step+StepPerSlice));
         if (spins == 0) traceData(__LINE__, threadIdx.x, int(connStepCache + (isSendNotRecv ? NCCL_STEPS : 0)), int(step+StepPerSlice));
@@ -204,20 +210,23 @@ private:
           ncclShmem.groups[group].dsts[0] = userBuff + dstIx + offset;
         waitPeer<DirectRecv, DirectSend, Recv, Send, Src, Dst>(dstIx, remoteIx, offset, sliceSize);
         subBarrier();
+        /* if user abort the kernel, we don't need to actually perform copy/reduce; just set size
+         * to 0 to avoid unnecessary workload. */
+        size_t workSize = ncclShmem.aborted ? 0 : sliceSize;
         if (DirectRecv && ncclShmem.groups[group].srcs[0] == ncclShmem.groups[group].dsts[0]) {
           // We can only have one direct receive. Since srcs[0] == dstPtr+offset, skip one copy
           if (Send) {
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_ENTRY)
             if (tid == 0) {
-              NpKit::CollectGpuEvent(NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_ENTRY, sliceSize*sizeof(T), 0, __builtin_amdgcn_s_memrealtime(),
+              NpKit::CollectGpuEvent(NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_ENTRY, sliceSize*sizeof(T), 0, NPKIT_GET_GPU_TIMESTAMP(),
                   ncclShmem.comm.npKitEventCollectContexts + npKitCtxIdx);
             }
 #endif
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_PRIM_COLLECT_DATA_PROCESS_TIME)
             if (tid == 0) {
-              npKitDataProcessEntryTime = __builtin_amdgcn_s_memrealtime();
+              npKitDataProcessEntryTime = NPKIT_GET_GPU_TIMESTAMP();
             }
 #endif
 
@@ -226,18 +235,18 @@ private:
               (tid, nworkers, nullptr, false,
                1, (T const**)ncclShmem.groups[group].srcs,
                fan.nsend(), (T**)ncclShmem.groups[group].dsts+1,
-               sliceSize);
+               workSize);
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_PRIM_COLLECT_DATA_PROCESS_TIME)
             if (tid == 0) {
-              npKitDataProcessExitTime = __builtin_amdgcn_s_memrealtime();
+              npKitDataProcessExitTime = NPKIT_GET_GPU_TIMESTAMP();
               npKitDataProcessTotalTime += npKitDataProcessExitTime - npKitDataProcessEntryTime;
             }
 #endif
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_EXIT)
             if (tid == 0) {
-              NpKit::CollectGpuEvent(NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_EXIT, sliceSize*sizeof(T), 0, __builtin_amdgcn_s_memrealtime(),
+              NpKit::CollectGpuEvent(NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_EXIT, sliceSize*sizeof(T), 0, NPKIT_GET_GPU_TIMESTAMP(),
                   ncclShmem.comm.npKitEventCollectContexts + npKitCtxIdx);
             }
 #endif
@@ -248,14 +257,14 @@ private:
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_ENTRY)
           if (tid == 0) {
-            NpKit::CollectGpuEvent(NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_ENTRY, sliceSize*sizeof(T), 0, __builtin_amdgcn_s_memrealtime(),
+            NpKit::CollectGpuEvent(NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_ENTRY, sliceSize*sizeof(T), 0, NPKIT_GET_GPU_TIMESTAMP(),
                 ncclShmem.comm.npKitEventCollectContexts + npKitCtxIdx);
           }
 #endif
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_PRIM_COLLECT_DATA_PROCESS_TIME)
           if (tid == 0) {
-            npKitDataProcessEntryTime = __builtin_amdgcn_s_memrealtime();
+            npKitDataProcessEntryTime = NPKIT_GET_GPU_TIMESTAMP();
           }
 #endif
 
@@ -263,18 +272,18 @@ private:
             (tid, nworkers, ncclShmem.redOpArgs, postOp,
              Recv, (T const**)ncclShmem.groups[group].srcs,
              Dst, (T**)ncclShmem.groups[group].dsts,
-             sliceSize);
+             workSize);
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_PRIM_COLLECT_DATA_PROCESS_TIME)
           if (tid == 0) {
-            npKitDataProcessExitTime = __builtin_amdgcn_s_memrealtime();
+            npKitDataProcessExitTime = NPKIT_GET_GPU_TIMESTAMP();
             npKitDataProcessTotalTime += npKitDataProcessExitTime - npKitDataProcessEntryTime;
           }
 #endif
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_EXIT)
           if (tid == 0) {
-            NpKit::CollectGpuEvent(NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_EXIT, sliceSize*sizeof(T), 0, __builtin_amdgcn_s_memrealtime(),
+            NpKit::CollectGpuEvent(NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_EXIT, sliceSize*sizeof(T), 0, NPKIT_GET_GPU_TIMESTAMP(),
                 ncclShmem.comm.npKitEventCollectContexts + npKitCtxIdx);
           }
 #endif
@@ -283,14 +292,14 @@ private:
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_ENTRY)
           if (tid == 0) {
-            NpKit::CollectGpuEvent(NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_ENTRY, sliceSize*sizeof(T), 0, __builtin_amdgcn_s_memrealtime(),
+            NpKit::CollectGpuEvent(NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_ENTRY, sliceSize*sizeof(T), 0, NPKIT_GET_GPU_TIMESTAMP(),
                 ncclShmem.comm.npKitEventCollectContexts + npKitCtxIdx);
           }
 #endif
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_PRIM_COLLECT_DATA_PROCESS_TIME)
           if (tid == 0) {
-            npKitDataProcessEntryTime = __builtin_amdgcn_s_memrealtime();
+            npKitDataProcessEntryTime = NPKIT_GET_GPU_TIMESTAMP();
           }
 #endif
 
@@ -300,31 +309,26 @@ private:
             (tid, nworkers, ncclShmem.redOpArgs, postOp,
              Recv*fan.nrecv()+Src, (T const**)ncclShmem.groups[group].srcs,
              Send*fan.nsend()+Dst, (T**)ncclShmem.groups[group].dsts,
-             sliceSize);
+             workSize);
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_PRIM_COLLECT_DATA_PROCESS_TIME)
           if (tid == 0) {
-            npKitDataProcessExitTime = __builtin_amdgcn_s_memrealtime();
+            npKitDataProcessExitTime = NPKIT_GET_GPU_TIMESTAMP();
             npKitDataProcessTotalTime += npKitDataProcessExitTime - npKitDataProcessEntryTime;
           }
 #endif
 
 #if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_EXIT)
           if (tid == 0) {
-            NpKit::CollectGpuEvent(NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_EXIT, sliceSize*sizeof(T), 0, __builtin_amdgcn_s_memrealtime(),
+            NpKit::CollectGpuEvent(NPKIT_EVENT_PRIM_SIMPLE_REDUCE_OR_COPY_MULTI_EXIT, sliceSize*sizeof(T), 0, NPKIT_GET_GPU_TIMESTAMP(),
                 ncclShmem.comm.npKitEventCollectContexts + npKitCtxIdx);
           }
 #endif
 
         }
         barrier(); // This barrier has a counterpart in following loop
-#if defined(__gfx90a__)
-        if (Send && (flags & RolePostSend) && index == 0) {
-          if (MaxSend == 0 || MaxRecv == 0)
-            __threadfence_system();
-          else
-            __asm__ __volatile__("s_waitcnt vmcnt(0) lgkmcnt(0); buffer_wbinvl1_vol");
-        }
+#ifdef __GFX9__
+        if (Send && (flags & RolePostSend) && index == 0) __asm__ __volatile__("buffer_wbinvl1_vol");
 #else
         if (Send && (flags & RolePostSend) && index == 0) __threadfence_system();
 #endif
@@ -346,13 +350,8 @@ private:
         waitPeer<DirectRecv, DirectSend, Recv, Send, Src, Dst>(0, 0, 0, 0);
       }
       barrier(); // Has couterpart in preceding worker-only loop.
-#if defined(__gfx90a__)
-      if (Send && (flags & RolePostSend) && sliceSize > 0 && index == 0) {
-        if (MaxSend == 0 || MaxRecv == 0)
-          __threadfence_system();
-        else
-          __asm__ __volatile__("s_waitcnt vmcnt(0) lgkmcnt(0); buffer_wbinvl1_vol");
-      }
+#ifdef __GFX9__
+      if (Send && (flags & RolePostSend) && sliceSize > 0 && index == 0) __asm__ __volatile__("buffer_wbinvl1_vol");
 #else
       if (Send && (flags & RolePostSend) && sliceSize > 0 && index == 0) __threadfence_system();
 #endif
@@ -361,6 +360,35 @@ private:
       offset += sliceSize;
       slice += 1;
     }
+  }
+
+  template <int REDUCE, int COPY, int MULTISRCS, int MULTIDSTS>
+  __device__ __forceinline__ void mscclGenericOp(T** srcs, int nsrcs, T** dsts, int ndsts, int nelem) {
+    nelem = nelem < 0 ? 0 : nelem;
+    if (tid < nworkers) {
+      if (REDUCE){
+        srcs[nsrcs] = dsts[0];
+        nsrcs++;
+        if (MULTISRCS){
+          ReduceOrCopyMulti<Unroll, RedOp, T, 3, MSCCL_MAX_REDUCE_FUSION, 1, 1, 0>
+            (tid, nworkers, ncclShmem.redOpArgs, false, nsrcs, (T const**)srcs, 1, (T**)dsts, nelem);
+        } else {
+          ReduceOrCopyMulti<Unroll, RedOp, T, 2, 2, 1, 1, 0>
+            (tid, nworkers, ncclShmem.redOpArgs, false, 2, (T const**)srcs, 1, (T**)dsts, nelem);
+        }
+      }
+      if (COPY){
+        ReduceOrCopyMulti<Unroll, RedOp, T, 1, 1, 1, 1, 0>
+          (tid, nworkers, ncclShmem.redOpArgs, false, 1, (T const**)srcs, 1, (T**)dsts, nelem);
+        if (MULTISRCS) {
+          for (int i = 1; i < nsrcs; i++){
+            ReduceOrCopyMulti<Unroll, RedOp, T, 1, 1, 1, 1, 0>
+              (tid, nworkers, ncclShmem.redOpArgs, false, 1, (T const**)&srcs[i], 1, (T**)&dsts[i], nelem);
+          }
+        }
+      }
+    }
+    barrier();
   }
 
   // Scatter/Gather generic op
@@ -444,7 +472,7 @@ private:
       if (flags & RoleWaitRecv) {
         ncclShmem.groups[group].recvConns[index] = conn; // WaitRecv role saves since that's who needs it in setDataPtrs()
         connStepPtr = conn->tail;
-        connStepCache = atomicAdd_system((unsigned long long *)connStepPtr, 0);
+        connStepCache = atomicAdd((unsigned long long *)connStepPtr, 0);
         flags |= (conn->offsFifo != nullptr) ? OffsFifoEnabled : 0;
         if (Direct) {
           // User buffers have been registered
@@ -484,7 +512,7 @@ private:
       if (flags & RoleWaitSend) {
         ncclShmem.groups[group].sendConns[index] = conn; // WaitSend role saves since that's who needs it in setDataPtrs()
         connStepPtr = conn->head;
-        connStepCache = atomicAdd_system((unsigned long long *)connStepPtr, 0);
+        connStepCache = atomicAdd((unsigned long long *)connStepPtr, 0);
         flags |= (conn->offsFifo != nullptr) ? OffsFifoEnabled : 0;
         if (flags & OffsFifoEnabled)
           connOffsFifoPtr = conn->offsFifo;
@@ -596,7 +624,7 @@ private:
       int spins = 0;
       void *volatile *slot = ncclShmem.groups[group].recvConns[index]->ptrExchange;
       // Wait for consumer to consume previous value before trampling it.
-      while ((void *)atomicAdd_system((unsigned long long *) slot,0) != nullptr && !checkAbort(spins));
+      while ((void *)atomicAdd((unsigned long long *) slot,0) != nullptr && !checkAbort(spins));
       directBuff = (T*)outputBuf;
       // Encode pointer by XOR'ing against some address they definitely wouldn't send
       // since we want to allow them sending us nullptr while not colliding with
@@ -608,7 +636,7 @@ private:
       void *volatile *slot = ncclShmem.groups[group].sendConns[index]->ptrExchange;
       void *ptr;
       while (true) {
-        ptr = (void *)atomicAdd_system((unsigned long long *) slot,0);
+        ptr = (void *)atomicAdd((unsigned long long *) slot,0);
         if (ptr != nullptr || checkAbort(spins)) break;
       }
       directBuff = regUsed ? (T*)(e->dnOutputs[index]) :
@@ -621,7 +649,7 @@ private:
       volatile uint64_t* argSlot0 = ncclShmem.groups[group].sendConns[index]->redOpArgExchange;
       volatile uint64_t* argSlot1 = ncclShmem.groups[group].sendConns[index]->redOpArgExchange+1;
       // Wait for consumer to consume previous value before trampling it.
-      while (((void *)atomicAdd_system((unsigned long long *) slot,0) != nullptr || *argSlot0 != 0 || *argSlot1 !=0) && !checkAbort(spins));
+      while (((void *)atomicAdd((unsigned long long *) slot,0) != nullptr || *argSlot0 != 0 || *argSlot1 !=0) && !checkAbort(spins));
       // If there is no recv, then we are directly pulling from input buffer (e.g. directScatter)
       // Otherwise, we are pulling from output buffer (e.g. recvCopyDirectSend)
       directBuff = MaxRecv == 0 ? (T*)inputBuf : (T*)outputBuf;
@@ -640,7 +668,7 @@ private:
       volatile uint64_t* argSlot1 = ncclShmem.groups[group].recvConns[index]->redOpArgExchange+1;
       void *ptr;
       while (true) {
-        ptr = (void *)atomicAdd_system((unsigned long long *) slot,0);
+        ptr = (void *)atomicAdd((unsigned long long *) slot,0);
         if (ptr != nullptr || checkAbort(spins)) break;
       }
       directBuff = regUsed ? (T*)(MaxSend == 0 ? e->upOutputs[index] : e->dnInputs[index]) :
@@ -663,6 +691,12 @@ private:
   __device__ void moveDataPtrs(intptr_t delta) {
     if (flags & (RoleInput|RoleOutput))
       userBuff += delta;
+  }
+
+  // Set MSCCL data pointers
+  __device__ __forceinline__ void setDataPtrs(void const *inputBuf, void *outputBuf) {
+    if (flags & RoleInput) userBuff = (T*)inputBuf;
+    if (flags & RoleOutput) userBuff = (T*)outputBuf;
   }
 
   __device__ __forceinline__ void send(intptr_t inpIx, int eltN) {
@@ -741,5 +775,20 @@ private:
 
   __device__ __forceinline__ void recvSend(int eltN) {
     genericOp<0, 0, 1, 1, -1, -1>(-1, -1, -1, eltN, /*postOp=*/false);
+  }
+
+  // MSCCL primitives
+  __device__ __forceinline__ void sendWithBarrier(intptr_t inpIx, int eltN) {
+    send(inpIx, eltN);
+  }
+  __device__ __forceinline__ void localCopy(T* srcs, T* dsts, int eltN) {
+    return mscclGenericOp<0,1,0,0>(&srcs, 1, &dsts, 1, eltN);
+  }
+  __device__ __forceinline__ void reduce(T** srcs, int nsrcs, T** dsts, int ndsts, int eltN) {
+    if (nsrcs == 1) {
+      return mscclGenericOp<1,0,0,0>(srcs, 1, dsts, 1, eltN);
+    } else {
+      return mscclGenericOp<1,0,1,0>(srcs, nsrcs, dsts, 1, eltN);
+    }
   }
 };

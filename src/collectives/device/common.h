@@ -1,6 +1,6 @@
 /*************************************************************************
  * Copyright (c) 2017-2022, NVIDIA CORPORATION. All rights reserved.
- * Modifications Copyright (c) 2019-2022 Advanced Micro Devices, Inc. All rights reserved.
+ * Modifications Copyright (c) 2019-2023 Advanced Micro Devices, Inc. All rights reserved.
  *
  * See LICENSE.txt for license information
  ************************************************************************/
@@ -19,9 +19,9 @@
 #define __synclds() \
   asm volatile("s_waitcnt lgkmcnt(0) \n s_barrier");
 
-#if defined(__gfx90a__)
+#ifdef __GFX9__
 #define STORE(DST, SRC) \
-  { __threadfence_block(); atomicExch((unsigned long long *)(DST), (SRC)); }
+  { __threadfence(); atomicExch((unsigned long long *)(DST), (SRC)); }
 #else
 #define STORE(DST, SRC) \
   { __atomic_store_n((DST), (SRC), __ATOMIC_SEQ_CST); }
@@ -199,6 +199,10 @@ static const __device__ constexpr ncclKernelFunc_t ncclFuncs_ll128[]{
 #endif
 };
 
+static_assert(FUNC_INDEX_P2P == 3610, "Wrong P2P function index");
+static_assert(FUNC_INDEX_ALLTOALL_PIVOT == 3611, "Wrong AllToAllPivot function index");
+
+#ifndef USE_INDIRECT_FUNCTION_CALL
 template<unsigned short f, unsigned short l, bool u>
 struct Caller {
   static __forceinline__ __device__ __host__
@@ -215,9 +219,6 @@ struct Caller<f, f + 1, u>{
   static __forceinline__ __device__ __host__
   void call(unsigned short funcIndex) noexcept { if (u) ncclFuncs_ll128[f](); else ncclFuncs[f](); }
 };
-
-static_assert(FUNC_INDEX_P2P == 3610, "Wrong P2P function index");
-static_assert(FUNC_INDEX_ALLTOALL_PIVOT == 3611, "Wrong AllToAllPivot function index");
 
 template<bool USING_LL128>
 __forceinline__
@@ -340,11 +341,16 @@ void NCCL_CALL_FUNCTIONS(unsigned short funcIndex) noexcept {
   }
 #endif
 }
+#endif
 
 template <ncclFunc_t FUNCTION, int ALGO, int PROTO, class REDOP, typename T, int UNROLL>
 class ncclFunction {
   public:
+#ifdef USE_INDIRECT_FUNCTION_CALL
   __device__ __attribute__((noinline)) void run(struct ncclWorkElem* args) {}
+#else
+  __device__ void run(struct ncclWorkElem* args) {}
+#endif
 };
 
 #ifdef ENABLE_COLLTRACE
@@ -490,6 +496,7 @@ struct ncclShmemData {
   };
   uint64_t redOpArgs[NCCL_MAX_DIRECT_ARITY+1];
   int channelId;
+  int aborted;
   alignas(16) struct ncclDevComm comm;
   alignas(16) struct ncclDevChannel channel;
   alignas(16) struct ncclWork work;
@@ -498,6 +505,8 @@ struct ncclShmemData {
 #endif
 };
 static_assert(offsetof(struct ncclShmemData, work)%16 == 0, "ncclShmem.work needs to be 16B aligned");
+
+extern __shared__ ncclShmemData ncclShmem;
 
 #ifdef ENABLE_PROFILING
 #define __insert_timestamp(line_num) do { \
@@ -569,8 +578,6 @@ static __forceinline__ __device__ void ncclRedopPtrDeref(struct ncclWorkElem* we
   }
 }
 
-extern __shared__ ncclShmemData ncclShmem;
-
 template<ncclFunc_t Fn, typename T, typename RedOp, int Algo, int Proto, int FnIndex, bool COLLTRACE, bool USING_LL128>
 __forceinline__ __device__ void ncclKernel(
     struct ncclDevComm* comm, uint64_t channelMask, struct ncclWork* workHead
@@ -600,6 +607,8 @@ __forceinline__ __device__ void ncclKernel(
   }
   __synclds(); // publish ncclShmem.channelId
   int channelId = ncclShmem.channelId;
+  /* set abort flag to 0 */
+  if (tid == 0) ncclShmem.aborted = 0;
 
   if (true) {
     void *dst, *src;
@@ -660,7 +669,12 @@ __forceinline__ __device__ void ncclKernel(
     if (ncclShmem.work.header.funcIndex == FnIndex) {
       RunWork<Fn, T, RedOp, Algo, Proto>().run(&ncclShmem.work);
     } else {
+#ifdef USE_INDIRECT_FUNCTION_CALL
+      if (USING_LL128) ncclFuncs_ll128[ncclShmem.work.header.funcIndex]();
+      else ncclFuncs[ncclShmem.work.header.funcIndex]();
+#else
       NCCL_CALL_FUNCTIONS<USING_LL128>(ncclShmem.work.header.funcIndex);
+#endif
     }
 
     int workIxNext = ncclShmem.work.header.workNext;
@@ -711,10 +725,18 @@ __global__ void NCCL_KERN_NAME_LL128_DEBUG(func, algo, proto, devredop, type)(st
 
 // Examples :     AllReduce, RING, LL,    Sum,   uint8
 /* Functions for aggregation case */
+
+#ifdef USE_INDIRECT_FUNCTION_CALL
+#define IMPL_COLL_FUNC(func, algo, proto, devredop, type) \
+__device__  void NCCL_FUNC_NAME(func, algo, proto, devredop, type)() { \
+  RunWork<ncclFunc##func, type, Func##devredop<type>, NCCL_ALGO_##algo, NCCL_PROTO_##proto>().run(&ncclShmem.work); \
+}
+#else
 #define IMPL_COLL_FUNC(func, algo, proto, devredop, type) \
 __device__  __attribute__((noinline)) void NCCL_FUNC_NAME(func, algo, proto, devredop, type)() { \
   RunWork<ncclFunc##func, type, Func##devredop<type>, NCCL_ALGO_##algo, NCCL_PROTO_##proto>().run(&ncclShmem.work); \
 }
+#endif
 
 // Only generate inline kernels for LL
 #define IMPL_COLL4(func, algo, devredop, type, ncclType) \

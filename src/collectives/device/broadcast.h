@@ -10,7 +10,11 @@
 
 namespace {
   template<typename T, typename RedOp, typename Proto>
+#ifdef USE_INDIRECT_FUNCTION_CALL
+  __device__ void runRing(ncclWorkElem *args) {
+#else
   __device__ __attribute__((noinline)) void runRing(ncclWorkElem *args) {
+#endif
     const int tid = threadIdx.x;
     const int nthreads = args->nWarps*WARP_SIZE;
     const int bid = args->bid;
@@ -26,21 +30,6 @@ namespace {
 
 #if defined(ENABLE_NPKIT)
     int npKitCtxIdx = bid;
-#endif
-
-#if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_EVENT_TIME_SYNC_CPU)
-    if (tid == 0) {
-      uint64_t* cpuTimestamp = ncclShmem.comm.cpuTimestamp;
-      NpKit::CollectGpuEvent(NPKIT_EVENT_TIME_SYNC_CPU, 0, 0, *cpuTimestamp,
-          ncclShmem.comm.npKitEventCollectContexts + npKitCtxIdx);
-    }
-#endif
-
-#if defined(ENABLE_NPKIT) && defined(ENABLE_NPKIT_EVENT_TIME_SYNC_GPU)
-    if (tid == 0) {
-      NpKit::CollectGpuEvent(NPKIT_EVENT_TIME_SYNC_GPU, 0, 0, __builtin_amdgcn_s_memrealtime(),
-          ncclShmem.comm.npKitEventCollectContexts + npKitCtxIdx);
-    }
 #endif
 
     T *inputBuf = (T*)args->sendbuff;

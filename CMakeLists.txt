@@ -1,4 +1,5 @@
 # Copyright (c) 2019-2020 Advanced Micro Devices, Inc. All rights reserved.
+# Modifications Copyright (c) Microsoft Corporation. Licensed under the MIT License.
 
 cmake_minimum_required(VERSION 3.5)
 INCLUDE(CheckIncludeFiles)
@@ -8,7 +9,8 @@ INCLUDE(CheckSymbolExists)
 set( CMAKE_CXX_STANDARD 14 )
 # Without this line, it will add -std=gnu++14 instead, which has some issues.
 set( CMAKE_CXX_EXTENSIONS OFF )
-
+#Adding pthread flag for linking
+set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
 project(rccl CXX)
 
 include(cmake/Dependencies.cmake)
@@ -101,6 +103,10 @@ list(APPEND CMAKE_PREFIX_PATH
 find_package(hip REQUIRED)
 message(STATUS "HIP compiler: ${HIP_COMPILER}")
 message(STATUS "HIP runtime: ${HIP_RUNTIME}")
+check_symbol_exists("hipEventDisableSystemFence" "hip/hip_runtime_api.h" HIP_EVENT_DISABLE_FENCE)
+if(${HIP_EVENT_DISABLE_FENCE})
+  add_definitions(-DHIP_EVENT_DISABLE_FENCE)
+endif()
 
 find_package(hsa-runtime64 REQUIRED)
 get_target_property(HSA_INCLUDE_PATH hsa-runtime64::hsa-runtime64 INTERFACE_INCLUDE_DIRECTORIES)
@@ -138,7 +144,8 @@ if (BUILD_ALLREDUCE_ONLY)
   set(CU_SOURCES
       src/collectives/device/all_reduce.cu
       src/collectives/device/sendrecv.cu
-      src/collectives/device/functions.cu)
+      src/collectives/device/functions.cu
+      src/collectives/device/msccl_kernel.cu)
 else()
   set(CU_SOURCES
       src/collectives/device/all_reduce.cu
@@ -149,7 +156,8 @@ else()
       src/collectives/device/reduce_scatter.cu
       src/collectives/device/sendrecv.cu
       src/collectives/device/onerank_reduce.cu
-      src/collectives/device/functions.cu)
+      src/collectives/device/functions.cu
+      src/collectives/device/msccl_kernel.cu)
 endif()
 
 set(CPP_SOURCES)
@@ -202,12 +210,15 @@ set(HEADER_SOURCES
   src/include/param.h
   src/include/channel.h
   src/include/nvtx_stub.h
+  src/include/nvtx3.hpp
   src/include/core.h
   src/include/info.h
   src/include/git_version.h
   src/include/npkit/npkit_event.h
   src/include/npkit/npkit.h
   src/include/npkit/npkit_struct.h
+  src/include/nvtx3/nvToolsExtPayload.h
+  src/include/nvtx3/nvToolsExt.h
   src/include/nvtx3/nvtxDetail/nvtxImplCudaRt_v3.h
   src/include/nvtx3/nvtxDetail/nvtxTypes.h
   src/include/nvtx3/nvtxDetail/nvtxImpl.h
@@ -220,9 +231,21 @@ set(HEADER_SOURCES
   src/include/nvtx3/nvtxDetail/nvtxInit.h
   src/include/nvtx3/nvtxDetail/nvtxImplOpenCL_v3.h
   src/include/nvtx3/nvToolsExtSync.h
+  src/include/nvtx3/nvtxExtDetail/nvtxExtPayloadTypeInfo.h
+  src/include/nvtx3/nvtxExtDetail/nvtxExtImplPayload_v1.h
+  src/include/nvtx3/nvtxExtDetail/nvtxExtTypes.h
+  src/include/nvtx3/nvtxExtDetail/nvtxExtInit.h
+  src/include/nvtx3/nvtxExtDetail/nvtxExtImpl.h
   src/include/nvtx3/nvToolsExtCudaRt.h
   src/include/nvtx3/nvToolsExtCuda.h
   src/include/nvtx3/nvToolsExtOpenCL.h
+  src/include/msccl/msccl_kernel.h
+  src/include/msccl/msccl_lifecycle.h
+  src/include/msccl/msccl_parser.h
+  src/include/msccl/msccl_setup.h
+  src/include/msccl/msccl_scheduler.h
+  src/include/msccl/msccl_status.h
+  src/include/msccl/msccl_struct.h
   src/graph/rings.h
   src/graph/rome_models.h
   src/graph/topo.h
@@ -242,6 +265,7 @@ set(API_SOURCES
     src/collectives/scatter.cc
     src/collectives/gather.cc
     src/collectives/sendrecv.cc
+    src/collectives/msccl.cc
     src/net.cc)
 foreach(filename ${API_SOURCES})
   string(REPLACE ".cc"
@@ -278,6 +302,10 @@ set(CC_SOURCES
     src/misc/param.cc
     src/misc/rocmwrap.cc
     src/misc/strongstream.cc
+    src/misc/msccl/msccl_lifecycle.cc
+    src/misc/msccl/msccl_parser.cc
+    src/misc/msccl/msccl_setup.cc
+    src/misc/msccl/msccl_status.cc
     src/transport/coll_net.cc
     src/transport/net.cc
     src/transport/net_ib.cc
@@ -314,6 +342,7 @@ set(HIPIFY_SOURCES
     src/collectives/reduce_scatter_api.cpp
     src/collectives/scatter_api.cpp
     src/collectives/sendrecv_api.cpp
+    src/collectives/msccl_api.cpp
     src/debug.cpp
     src/enqueue.cpp
     src/graph/xml.cpp
@@ -356,6 +385,8 @@ configure_file(src/nccl.h.in ${CMAKE_CURRENT_BINARY_DIR}/git_version.cpp)
 
 # Execute git_version_check whenever rccl library is built
 add_dependencies(rccl git_version_check)
+
+add_definitions(-DNVTX_NO_IMPL)
 
 if(TRACE)
   add_definitions(-DENABLE_TRACE)
@@ -433,13 +464,21 @@ foreach(target ${AMDGPU_TARGETS})
 endforeach()
 
 if("${HIP_COMPILER}" MATCHES "clang")
-  target_compile_options(rccl PRIVATE -fvisibility=hidden --hipcc-func-supp)
+  find_program( hipcc_executable hipcc )
+  execute_process(COMMAND bash "-c" "${hipcc_executable} --version | grep 'HIP version' | awk -F\" \" '{ printf $3}' | awk -F\"-\" '{ printf $1}'" OUTPUT_VARIABLE hipcc_version_string)
+  message(STATUS "hipcc version: ${hipcc_version_string}")
+  if(${hipcc_version_string} VERSION_GREATER_EQUAL "5.5.30201")
+    add_definitions(-DUSE_INDIRECT_FUNCTION_CALL)
+    target_compile_options(rccl PRIVATE -fvisibility=hidden)
+    message(STATUS "Indirect function call enabled")
+  else()
+    target_compile_options(rccl PRIVATE -fvisibility=hidden --hipcc-func-supp)
+  endif()
   foreach(target ${AMDGPU_TARGETS})
     target_compile_options(rccl PRIVATE -fgpu-rdc)
   endforeach()
   target_link_libraries(rccl PRIVATE -fgpu-rdc)
   target_include_directories(rccl PRIVATE ${ROCM_PATH}/include)
-  find_program( hipcc_executable hipcc )
   execute_process(COMMAND bash "-c" "${hipcc_executable} -help | grep 'parallel-jobs'" OUTPUT_VARIABLE hipcc_parallel_jobs)
   if("${hipcc_parallel_jobs}" MATCHES "parallel-jobs")
     target_compile_options(rccl PRIVATE -parallel-jobs=12 PRIVATE -Wno-format-nonliteral)
@@ -488,6 +527,10 @@ rocm_install_targets(TARGETS
 		     )
 rocm_install(FILES ${PROJECT_BINARY_DIR}/include/rccl/rccl.h src/include/nccl_net.h
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/rccl)
+file(COPY tools/msccl-algorithms DESTINATION ${PROJECT_BINARY_DIR})
+file(COPY tools/msccl-unit-test-algorithms DESTINATION ${PROJECT_BINARY_DIR})
+install(DIRECTORY ${PROJECT_BINARY_DIR}/msccl-algorithms DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(DIRECTORY ${PROJECT_BINARY_DIR}/msccl-unit-test-algorithms DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
 rocm_export_targets(NAMESPACE
                     roc::
@@ -522,7 +565,8 @@ Source: https://github.com/ROCmSoftwarePlatform/rccl
 
 Files: *
 Copyright: (c) 2016-2020, NVIDIA CORPORATION. All rights reserved.
-Modifications Copyright (c) 2020 Advanced Micro Devices, Inc. All rights reserved.
+Modifications Copyright (c) 2020-2023 Advanced Micro Devices, Inc. All rights reserved.
+Modifications Copyright (c) Microsoft Corporation. Licensed under the MIT License.
 License: See LICENSE.txt for license information\n")
   install(FILES "${CMAKE_BINARY_DIR}/copyright" DESTINATION ${CMAKE_INSTALL_DATADIR}/rccl)
   # Write changelog file

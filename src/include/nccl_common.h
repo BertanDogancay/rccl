@@ -12,12 +12,23 @@ typedef enum {NCCL_INIT=1, NCCL_COLL=2, NCCL_P2P=4, NCCL_SHM=8, NCCL_NET=16, NCC
 
 typedef void (*ncclDebugLogger_t)(ncclDebugLogLevel level, unsigned long flags, const char *file, int line, const char *fmt, ...);
 
-#define NCCL_NUM_FUNCTIONS 5 // Send/Recv and AllToAllPivot not included for now
-typedef enum { ncclFuncBroadcast, ncclFuncReduce, ncclFuncAllGather, ncclFuncReduceScatter, ncclFuncAllReduce, ncclFuncSendRecv, ncclFuncSend, ncclFuncRecv,  ncclFuncAllToAllPivot, ncclNumFuncs} ncclFunc_t;
-
 #define FUNC_INDEX_P2P 835
 #define FUNC_INDEX_ALLTOALL_PIVOT 555
-#define FUNC_INDEX_TOTAL 846
+#define FUNC_INDEX_TOTAL FUNC_INDEX_P2P + 11
+
+#define NCCL_NUM_FUNCTIONS 5 // Send/Recv not included for now
+typedef enum {
+  ncclFuncBroadcast = 0,
+  ncclFuncReduce = 1,
+  ncclFuncAllGather = 2,
+  ncclFuncReduceScatter = 3,
+  ncclFuncAllReduce = 4,
+  ncclFuncSendRecv = 5,
+  ncclFuncSend = 6,
+  ncclFuncRecv = 7,
+  ncclFuncAllToAllPivot = 8,
+  ncclNumFuncs = 9
+} ncclFunc_t;
 
 #define NCCL_NUM_ALGORITHMS 6 // Tree/Ring/CollNet*
 #define NCCL_ALGO_UNDEF -1

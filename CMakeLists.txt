@@ -281,6 +281,7 @@ set(SRC_FILES
   src/net.cc
   src/msccl.cc
   src/proxy.cc
+  src/register.cc
   src/transport.cc
   src/init_nvtx.cc
 # src/clique/AllReduceCliqueKernel.h
@@ -371,6 +372,7 @@ set(SRC_FILES
   src/include/proxy.h
   src/include/rccl_bfloat16.h
   src/include/rccl_vars.h
+  src/include/register.h
   src/include/rocm_smi_wrap.h
   src/include/rocmwrap.h
   src/include/roctx.h
@@ -433,8 +435,6 @@ set(SRC_FILES
   src/include/transport.h
   src/include/trees.h
   src/include/utils.h
-  src/init.cc
-  src/init_nvtx.cc
   src/misc/archinfo.cc
   src/misc/argcheck.cc
 # src/misc/cudawrap.cc

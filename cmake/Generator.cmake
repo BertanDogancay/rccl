@@ -65,7 +65,7 @@ set(FLOATS_LIST "half" "float" "double" "rccl_bfloat16")
 #                         --- or ---
 # make ONLY_FUNCS="AllReduce RING SIMPLE|ReduceScatter RING LL * float"
 
-set(AllGather_Params     "RING" "*" "Sum" "int8_t")
+set(AllGather_Params     "RING" "*"      "Sum" "int8_t")
 set(AllReduce_Params     "*"    "*"      "*"   "*")
 set(AllToAllPivot_Params "RING" "SIMPLE" "Sum" "int8_t")
 set(Broadcast_Params     "RING" "*"      "Sum" "int8_t")

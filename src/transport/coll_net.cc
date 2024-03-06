@@ -383,9 +383,11 @@ static ncclResult_t sharedBuffersInit(struct ncclCollNetSharedRes* collNet, int 
   *size = collNet->size;
 
   if (cuda && collNet->cudaBuff == NULL) {
-    NCCLCHECK(ncclCudaCalloc(&collNet->cudaBuff, *size));
-    cudaMemset(collNet->cudaBuff, 0x33, *size/2);
-    cudaMemset((char*)collNet->cudaBuff + *size/2, 0x66, *size/2);
+#if defined(HIP_UNCACHED_MEMORY)
+    NCCLCHECK(ncclCudaCalloc(&collNet->cudaBuff, *size, nullptr, cuda ? hipDeviceMallocUncached : hipDeviceMallocDefault));
+#else
+    NCCLCHECK(ncclCudaCalloc(&collNet->cudaBuff, *size, nullptr, cuda ? hipDeviceMallocFinegrained : hipDeviceMallocDefault));
+#endif
   }
   if (!cuda && collNet->hostBuff == NULL) {
     NCCLCHECK(ncclCudaHostCalloc(&collNet->hostBuff, *size));

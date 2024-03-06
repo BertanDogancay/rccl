@@ -247,7 +247,8 @@ static ncclResult_t computeCollAlignCount(struct ncclInfo* collInfo, size_t* ali
   if (collInfo->protocol == NCCL_PROTO_SIMPLE) {
     *alignCount = NCCL_SIMPLE_ALIGNMENT / ncclTypeSize(collInfo->datatype);
   } else if (collInfo->protocol == NCCL_PROTO_LL128) {
-    *alignCount = NCCL_LL128_ALIGNMENT_PER_WARP / ncclTypeSize(collInfo->datatype) * (collInfo->nThreads / WARP_SIZE);
+    // LL128 alignCount should be same as LL for now. NCCL_LL128_ALIGNMENT_PER_WARP needs review 
+    *alignCount = NCCL_LL_ALIGNMENT_PER_THREAD / ncclTypeSize(collInfo->datatype) * collInfo->nThreads;
   } else {
     *alignCount = NCCL_LL_ALIGNMENT_PER_THREAD / ncclTypeSize(collInfo->datatype) * collInfo->nThreads;
   }

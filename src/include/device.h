@@ -265,12 +265,16 @@ struct ncclWorkElemP2p {
     uint32_t connIndex:2;
     int32_t proto:2;
   };
-
-  enum ncclWorkP2PType p2pType:4;
+  union {
+    uint16_t flagBit;
+    struct {
+      enum ncclWorkP2PType p2pType:4;
+      uint8_t nWarps:4;
+      uint8_t warpStart:4;
+      uint8_t ngroups:4;
+    };
+  };
   uint8_t reg:1;
-  uint8_t nWarps:5;
-  uint8_t warpStart:4;
-  uint8_t ngroups:4;
   uint16_t opCount:12;
   // Important not to use any fields with greater than 4-byte alignment since
   // we need sizeof(ncclWorkElemP2p)==28, but that would be padded up to 32 if

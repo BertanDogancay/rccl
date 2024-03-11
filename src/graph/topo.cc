@@ -869,17 +869,25 @@ ncclResult_t ncclTopoGetLocalNet(struct ncclTopoSystem* system, int rank, int ch
 }
 
 ncclResult_t ncclTopoGetLocalGpu(struct ncclTopoSystem* system, int net, int* gpuIndex) {
+  int netIndex;
+  NCCLCHECK(ncclTopoIdToIndex(system, NET, net, &netIndex));
+  int* localGpus = NULL;
+  int localGpuCount;
+  NCCLCHECK(ncclTopoGetLocal(system, NET, netIndex, GPU, &localGpus, &localGpuCount, NULL));
   for (int c=0; c<MAXCHANNELS; c++) {
-    for (int g=0; g<system->nodes[GPU].count; g++) {
+    for (int lg=0; lg<localGpuCount; lg++) {
+      int g = localGpus[lg];
       struct ncclTopoNode* gpu = system->nodes[GPU].nodes+g;
       int id;
       NCCLCHECK(ncclTopoGetLocalNet(system, gpu->gpu.rank, c, &id));
       if (net == id) {
         *gpuIndex = g;
+        free(localGpus);
         return ncclSuccess;
       }
     }
   }
+  free(localGpus);
   *gpuIndex = -1;
   return ncclSuccess;
 }

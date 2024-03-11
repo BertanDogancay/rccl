@@ -534,10 +534,10 @@ inline int ncclDevFuncId(int coll, int devRedOp, int type, int algo, int proto) 
 
     // <all_algos> / <all_protos> / <all_redops> / <all_types>
     if (coll == ncclFuncAllReduce) {
-      row += (((algo * NCCL_NUM_PROTOCOLS + proto) * ncclNumDevRedOps + devRedOp) * ncclNumTypes + type) - /*floats for each SumPostDiv*/ 4 * (algo * NCCL_NUM_PROTOCOLS + proto);
+      row += (((algo * NCCL_NUM_PROTOCOLS + proto) * ncclNumDevRedOps + devRedOp) * ncclNumTypes + type) - NCCL_NUM_FLOATS * (algo * NCCL_NUM_PROTOCOLS + proto);
       break;
     }
-    row += (NCCL_NUM_ALGORITHMS - 2) * NCCL_NUM_PROTOCOLS * (ncclNumDevRedOps * ncclNumTypes - /*floats for each SumPostDiv*/ 4);
+    row += (NCCL_NUM_ALGORITHMS - 2) * NCCL_NUM_PROTOCOLS * (ncclNumDevRedOps * ncclNumTypes - NCCL_NUM_FLOATS);
 
     // RING / SIMPLE / Sum / int8_t
     if (coll == ncclFuncAllToAllPivot) break;
@@ -552,17 +552,17 @@ inline int ncclDevFuncId(int coll, int devRedOp, int type, int algo, int proto) 
 
     // RING / <all_protos> / <all_redops> / <all_types>
     if (coll == ncclFuncReduce) {
-      row += ((proto * ncclNumDevRedOps + devRedOp) * ncclNumTypes + type) - /*floats for each SumPostDiv*/ 4 * proto; 
+      row += ((proto * ncclNumDevRedOps + devRedOp) * ncclNumTypes + type) - NCCL_NUM_FLOATS * proto; 
       break;
     }
-    row += NCCL_NUM_PROTOCOLS * (ncclNumDevRedOps * ncclNumTypes - /*floats for each SumPostDiv*/ 4);
+    row += NCCL_NUM_PROTOCOLS * (ncclNumDevRedOps * ncclNumTypes - NCCL_NUM_FLOATS);
 
     // RING / <all_protos> / <all_redops> / <all_types>
     if (coll == ncclFuncReduceScatter) {
-      row += ((proto * ncclNumDevRedOps + devRedOp) * ncclNumTypes + type) - /*floats for each SumPostDiv*/ 4 * proto;
+      row += ((proto * ncclNumDevRedOps + devRedOp) * ncclNumTypes + type) - NCCL_NUM_FLOATS * proto;
       break;
     }
-    row += NCCL_NUM_PROTOCOLS * (ncclNumDevRedOps * ncclNumTypes - /*floats for each SumPostDiv*/ 4);
+    row += NCCL_NUM_PROTOCOLS * (ncclNumDevRedOps * ncclNumTypes - NCCL_NUM_FLOATS);
 
     // RING / SIMPLE / Sum / int8_t
     if (coll == ncclFuncSendRecv) break;
@@ -573,8 +573,6 @@ inline int ncclDevFuncId(int coll, int devRedOp, int type, int algo, int proto) 
   return ncclDevFuncRowToId[row];
 }
 
-inline int ncclDevFuncId_P2p() { return ncclDevFuncRowToId[FUNC_INDEX_P2P]; }
-
-inline int ncclDevFuncId_AllToAllPivot() { return ncclDevFuncRowToId[FUNC_INDEX_ALLTOALL_PIVOT]; }
+inline int ncclDevFuncId_P2p() { return ncclDevFuncRowToId[FUNC_INDEX_TOTAL - NCCL_NUM_ONERANK - 1]; }
 
 #endif

@@ -276,7 +276,7 @@ namespace RcclUnitTesting
     InteractiveWait("Finishing PrepareData");
   }
 
-  void TestBed::ExecuteCollectives(std::vector<int> const &currentRanks, bool const useHipGraph)
+  void TestBed::ExecuteCollectives(std::vector<int> const &currentRanks, bool const useHipGraph, bool const multiGraph)
   {
     InteractiveWait("Starting ExecuteCollectives");
 
@@ -298,6 +298,7 @@ namespace RcclUnitTesting
         PIPE_WRITE(childId, cmd);
         PIPE_WRITE(childId, ev.timeoutUs);
         PIPE_WRITE(childId, useHipGraph);
+        PIPE_WRITE(childId, multiGraph);
         int tempCurrentRanks = currentRanks.size();
         PIPE_WRITE(childId, tempCurrentRanks);
         for (int rank = 0; rank < currentRanks.size(); ++rank){
@@ -345,6 +346,23 @@ namespace RcclUnitTesting
     InteractiveWait("Finishing ValidateResults");
   }
 
+  void TestBed::LaunchGraphs()
+  {
+    InteractiveWait("Starting LaunchGraphs");
+
+    int const cmd = TestBedChild::CHIILD_LAUNCH_GRAPHS;
+    for (int childId = 0; childId < this->numActiveChildren; ++childId)
+    {
+      // Send LaunchGraphs command to each active child process
+      PIPE_WRITE(childId, cmd);
+
+      // Wait for child acknowledgement
+      PIPE_CHECK(childId);
+    }
+
+    InteractiveWait("Finishing LaunchGraphs");
+  }
+
   void TestBed::DeallocateMem(int const collId, int const rank)
   {
     InteractiveWait("Starting ValidateResults");
@@ -386,6 +404,23 @@ namespace RcclUnitTesting
     Finalize();
 
     InteractiveWait("Finishing DestroyComms");
+  }
+
+  void TestBed::DestroyGraphs()
+  {
+    InteractiveWait("Starting DestroyGraphs");
+
+    int const cmd = TestBedChild::CHILD_DESTROY_GRAPHS;
+    for (int childId = 0; childId < this->numActiveChildren; ++childId)
+    {
+      // Send DestroyGraphs command to each active child process
+      PIPE_WRITE(childId, cmd);
+
+      // Wait for child acknowledgement
+      PIPE_CHECK(childId);
+    }
+
+    InteractiveWait("Finishing DestroyGraphs");
   }
 
   void TestBed::Finalize()

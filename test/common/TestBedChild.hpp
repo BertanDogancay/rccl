@@ -28,10 +28,12 @@ namespace RcclUnitTesting
       CHILD_PREPARE_DATA     = 4,  // PrepareData()
       CHILD_EXECUTE_COLL     = 5,  // ExecuteCollectives()
       CHILD_VALIDATE_RESULTS = 6,  // ValidateResults()
-      CHILD_DEALLOCATE_MEM   = 7,  // DeallocateMem()
-      CHILD_DESTROY_COMMS    = 8,  // DestroyComms()
-      CHILD_STOP             = 9,  // Stop()
-      NUM_CHILD_COMMANDS     = 10
+      CHIILD_LAUNCH_GRAPHS   = 7,  // LaunchGraphs()
+      CHILD_DEALLOCATE_MEM   = 8,  // DeallocateMem()
+      CHILD_DESTROY_COMMS    = 9,  // DestroyComms()
+      CHILD_DESTROY_GRAPHS   = 10, // DestroyGraphs()
+      CHILD_STOP             = 11, // Stop()
+      NUM_CHILD_COMMANDS     = 12
     };
 
     char const ChildCommandNames[NUM_CHILD_COMMANDS][20] =
@@ -70,6 +72,8 @@ namespace RcclUnitTesting
     std::vector<int> deviceIds;                         // Device IDs for each rank
     std::vector<std::vector<hipStream_t>> streams;      // Streams for executing collectives
     std::vector<std::vector<CollectiveArgs>> collArgs;  // Info for each collective for each rank
+    std::vector<std::vector<std::vector<hipGraph_t>>> graphs;
+    std::vector<std::vector<std::vector<hipGraphExec_t>>> graphExecs;
 
     // Constructor
     TestBedChild(int const childId, bool const verbose, int const printValues);
@@ -102,10 +106,16 @@ namespace RcclUnitTesting
     // Validate that output matches expected
     ErrCode ValidateResults();
 
+    // Launch instantiated graphs
+    ErrCode LaunchGraphs();
+
     // Release allocated memory
     ErrCode DeallocateMem();
 
     // Destroys RCCL communicators
     ErrCode DestroyComms();
+
+    // Destroys graphs
+    ErrCode DestroyGraphs();
   };
 }

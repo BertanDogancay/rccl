@@ -97,8 +97,10 @@ namespace RcclUnitTesting
       case CHILD_PREPARE_DATA    : status = PrepareData();        break;
       case CHILD_EXECUTE_COLL    : status = ExecuteCollectives(); break;
       case CHILD_VALIDATE_RESULTS: status = ValidateResults();    break;
+      case CHIILD_LAUNCH_GRAPHS  : status = LaunchGraphs();       break;
       case CHILD_DEALLOCATE_MEM  : status = DeallocateMem();      break;
       case CHILD_DESTROY_COMMS   : status = DestroyComms();       break;
+      case CHILD_DESTROY_GRAPHS  : status = DestroyGraphs();      break;
       case CHILD_STOP            : goto stop;
       default: exit(0);
       }
@@ -398,6 +400,8 @@ namespace RcclUnitTesting
 
     bool useHipGraph = false;
     PIPE_READ(useHipGraph);
+    bool multiGraph = false;
+    PIPE_READ(multiGraph);
 
     int numRanksToExecute, tempRank;
     std::vector<int> ranksToExecute = {};
@@ -420,13 +424,13 @@ namespace RcclUnitTesting
     }
 
     numRanksToExecute = (int)localRanksToExecute.size();
-    std::vector<std::vector<hipGraph_t>> graphs;
+    std::vector<std::vector<hipGraph_t>> graph;
     std::vector<std::vector<hipGraphExec_t>> graphExec;
-    graphs.resize(numRanksToExecute);
+    graph.resize(numRanksToExecute);
     graphExec.resize(numRanksToExecute);
     for (int i = 0; i < numRanksToExecute; i++)
     {
-      graphs[i].resize(this->numStreamsPerGroup);
+      graph[i].resize(this->numStreamsPerGroup);
       graphExec[i].resize(this->numStreamsPerGroup);
     }
 
@@ -626,31 +630,36 @@ namespace RcclUnitTesting
         CHECK_HIP(hipSetDevice(this->deviceIds[localRank]));
         for (int i = 0; i < this->numStreamsPerGroup; i++)
         {
-          CHECK_HIP(hipStreamEndCapture(this->streams[localRank][i], &graphs[localRank][i]));
+          CHECK_HIP(hipStreamEndCapture(this->streams[localRank][i], &graph[localRank][i]));
 
-          if (this->verbose)
-          {
-            size_t numNodes;
-            hipGraphNode_t* nodes;
-            CHECK_HIP(hipGraphGetNodes(graphs[localRank][i], nodes, &numNodes));
-            INFO("Graph for rank %d stream %d has %lu nodes\n", localRank, i, numNodes);
-          }
+          // if (this->verbose)
+          // {
+          //   size_t numNodes;
+          //   hipGraphNode_t* nodes;
+          //   CHECK_HIP(hipGraphGetNodes(graphs[localRank][i], nodes, &numNodes));
+          //   INFO("Graph for rank %d stream %d has %lu nodes\n", localRank, i, numNodes);
+          // }
         }
 
         if (this->verbose) INFO("Instantiating executable graph for rank %d\n", localRank);
         for (int i = 0; i < this->numStreamsPerGroup; i++)
         {
-          CHECK_HIP(hipGraphInstantiate(&graphExec[localRank][i], graphs[localRank][i], NULL, NULL, 0));
+          CHECK_HIP(hipGraphInstantiate(&graphExec[localRank][i], graph[localRank][i], NULL, NULL, 0));
         }
       }
 
-      for (int localRank : localRanksToExecute)
-      {
-        if (this->verbose) INFO("Launch graph for rank %d\n", localRank);
-        CHECK_HIP(hipSetDevice(this->deviceIds[localRank]));
-        for (int i = 0; i < this->numStreamsPerGroup; i++)
+      this->graphs.push_back(graph);
+      this->graphExecs.push_back(graphExec);
+
+      if (!multiGraph) {
+        for (int localRank : localRanksToExecute)
         {
-          CHECK_HIP(hipGraphLaunch(graphExec[localRank][i], this->streams[localRank][i]));
+          if (this->verbose) INFO("Launch graph for rank %d\n", localRank);
+          CHECK_HIP(hipSetDevice(this->deviceIds[localRank]));
+          for (int i = 0; i < this->numStreamsPerGroup; i++)
+          {
+            CHECK_HIP(hipGraphLaunch(graphExec[localRank][i], this->streams[localRank][i]));
+          }
         }
       }
     }
@@ -707,7 +716,7 @@ namespace RcclUnitTesting
     }
 
     // Destroy graphs
-    if (useHipGraph)
+    if (useHipGraph && !multiGraph)
     {
       for (int localRank : localRanksToExecute)
       {
@@ -715,7 +724,7 @@ namespace RcclUnitTesting
         CHECK_HIP(hipSetDevice(this->deviceIds[localRank]));
         for (int i = 0; i < this->numStreamsPerGroup; i++)
         {
-          CHECK_HIP(hipGraphDestroy(graphs[localRank][i]));
+          CHECK_HIP(hipGraphDestroy(graph[localRank][i]));
           CHECK_HIP(hipGraphExecDestroy(graphExec[localRank][i]));
         }
       }
@@ -783,6 +792,33 @@ namespace RcclUnitTesting
     if (this->verbose) INFO("Child %d finishes ValidateResults() with status %s\n", this->childId,
                             status == TEST_SUCCESS ? "SUCCESS" : "FAIL");
     return status;
+  }
+
+  ErrCode TestBedChild::LaunchGraphs()
+  {
+    if (this->verbose) INFO("Child %d begins LaunchGraphs\n", this->childId);
+
+    for (int i = 0; i < this->graphExecs.size(); ++i)
+    {
+      for (int localRank = 0; localRank < this->deviceIds.size(); ++localRank) {
+        if (this->verbose) INFO("Launch graph for rank %d\n", localRank);
+        CHECK_HIP(hipSetDevice(this->deviceIds[localRank]));
+
+        for (int j = 0; j < this->numStreamsPerGroup; ++j)
+        {
+          CHECK_HIP(hipGraphLaunch(this->graphExecs[i][localRank][j], this->streams[localRank][j]));
+        }
+      }
+    }
+
+    for (int localRank = 0; localRank < this->deviceIds.size(); ++localRank)
+    {
+      for (int i = 0; i < this->numStreamsPerGroup; i++)
+        CHECK_HIP(hipStreamSynchronize(this->streams[localRank][i]));
+    }
+
+    if (this->verbose) INFO("Child %d finishes LaunchGraphs\n", this->childId);
+    return TEST_SUCCESS;
   }
 
   ErrCode TestBedChild::DeallocateMem()
@@ -862,6 +898,29 @@ namespace RcclUnitTesting
     this->comms.clear();
     this->streams.clear();
     if (this->verbose) INFO("Child %d finishes DestroyComms\n", this->childId);
+    return TEST_SUCCESS;
+  }
+
+  ErrCode TestBedChild::DestroyGraphs()
+  {
+    if (this->verbose) INFO("Child %d begins DestroyGraphs\n", this->childId);
+
+    // Release graphs
+    for (int i = 0; i < this->graphs.size(); ++i)
+    {
+      for (int localRank = 0; localRank < this->deviceIds.size(); ++localRank) {
+        CHECK_HIP(hipSetDevice(this->deviceIds[localRank]));
+        for (int j = 0; j < this->numStreamsPerGroup; j++)
+        {
+          CHECK_HIP(hipGraphDestroy(this->graphs[i][localRank][j]));
+          CHECK_HIP(hipGraphExecDestroy(this->graphExecs[i][localRank][j]));
+        }
+      }
+    }
+    this->graphs.clear();
+    this->graphExecs.clear();
+
+    if (this->verbose) INFO("Child %d finishes DestroyGraphs\n", this->childId);
     return TEST_SUCCESS;
   }
 }

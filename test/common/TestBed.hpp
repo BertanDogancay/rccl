@@ -77,16 +77,23 @@ namespace RcclUnitTesting
 
     // Execute all collectives on all test children
     // Blocks until collective is completed
-    void ExecuteCollectives(std::vector<int> const &currentRanks = {}, bool const useHipGraph = false);
+    void ExecuteCollectives(std::vector<int> const &currentRanks = {}, bool const useHipGraph = false, 
+                            bool const multiGraph = false);
 
     // Perform results validation - compare output to expected
     void ValidateResults(bool& isCorrect, int collId = -1, int const rank = -1);
+
+    // Launch instantiated graphs
+    void LaunchGraphs();
 
     // Release allocated memory
     void DeallocateMem(int collId = -1, int const rank = -1);
 
     // Release the RCCL comms
     void DestroyComms();
+
+    // Release created graphs
+    void DestroyGraphs();
 
     // Explicit TestBed destructor that releases all child processes
     // No further calls to TestBed should be performed after this call

@@ -58,6 +58,7 @@ if(BUILD_TESTS)
       BroadcastTests.cpp
       GatherTests.cpp
       GroupCallTests.cpp
+      MultiGraphTests.cpp
       NonBlockingTests.cpp
       ReduceScatterTests.cpp
       ReduceTests.cpp

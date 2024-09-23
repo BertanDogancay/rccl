@@ -9,6 +9,7 @@
 #include "comm.h"
 #include "net.h"
 #include "register.h"
+#include "transport.h"
 #include "api_trace.h"
 
 ncclResult_t ncclNetDeregister(struct ncclComm* comm, struct ncclReg* reg) {
@@ -80,6 +81,7 @@ ncclResult_t ncclNetRegister(struct ncclComm* comm, void* addr, size_t size, str
     }
   }
 end:
+  INFO(NCCL_INIT, "Register ptr %p size %ld on %d net devices", addr, size, reg->nDevs);
   ncclDebugNoWarn = 0;
   if (ret != ncclSuccess) NCCLCHECK(ncclNetDeregister(comm, reg));
   return ret;

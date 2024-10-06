@@ -272,17 +272,11 @@ __device__ __forceinline__ void loadWorkBatchToShmem(
     // much faster using shared memory.
     uint8_t* fnsOfBitset = (uint8_t*)ncclScratchForWarp(threadIdx.x/WARP_SIZE);
     __syncwarp();
-    if (uint32_t(batch.offsetBitset) & (1u<<lane)) {
-      int nWorksBelow = __popc(uint32_t(batch.offsetBitset) & ((1u<<lane)-1));
+    if (uint64_t(batch.offsetBitset) & (1ull<<lane)) {
+      int nWorksBelow = __popc(uint64_t(batch.offsetBitset) & ((1ull<<lane)-1));
       fnsOfBitset[nWorksBelow] = lane;
     }
-    int nWorksLow32 = __popc(uint32_t(batch.offsetBitset)); // just of low 32 bits
-    if (uint32_t(batch.offsetBitset>>32) & (1u<<lane)) {
-      int nWorksBelow = nWorksLow32;
-      nWorksBelow += __popc(uint32_t(batch.offsetBitset>>32) & ((1u<<lane)-1));
-      fnsOfBitset[nWorksBelow] = 32 + lane;
-    }
-    int nWorks = nWorksLow32 + __popc(uint32_t(batch.offsetBitset>>32)); // add high 32 bits
+    int nWorks = __popc(uint64_t(batch.offsetBitset));
     __syncwarp();
 
     int workSize;

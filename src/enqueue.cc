@@ -634,6 +634,8 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
   return ncclSuccess;
 }
 
+RCCL_PARAM(IntraNetThreshold, "INTRANET_THRESHOLD", 8388608);
+
 static ncclResult_t scheduleCollTasksToPlan(
     struct ncclComm* comm, struct ncclKernelPlan* plan, struct ncclKernelPlanBudget* budget
   ) {
@@ -693,12 +695,19 @@ static ncclResult_t scheduleCollTasksToPlan(
       size_t globalBytesPerElement = elementSize*ncclFuncMaxSendRecvCount(task->func, comm->nRanks, 1);
       struct ncclProxyOp proxyOp;
       uint32_t chunkSize, directFlags=0;
-      NCCLCHECK(calcCollChunking(comm, task, nChannels, globalBytesPerElement*task->count, &chunkSize, &directFlags, &proxyOp));
+      size_t nBytes = globalBytesPerElement*task->count;
+      NCCLCHECK(calcCollChunking(comm, task, nChannels, nBytes, &chunkSize, &directFlags, &proxyOp));
       devWork->channelLo = 0;
       devWork->channelHi = nChannels-1;
       devWork->collnet.count = task->count;
       devWork->collnet.chunkCount = chunkSize/ncclTypeSize(task->datatype);
       devWork->direct = directFlags;
+      devWork->connIndex = 0;
+      if (task->protocol == NCCL_PROTO_SIMPLE && task->algorithm == NCCL_ALGO_RING) {
+        if (comm->useIntraNet && nBytes > rcclParamIntraNetThreshold()) {
+          devWork->connIndex = NCCL_CONN_IDX_P2P_NET;
+        }
+      }
 
       uint64_t proxyOpId = uint64_t(plan->collOpCount++)<<1 | 0;
       for (int c=devWork->channelLo; c <= (int)devWork->channelHi; c++) {
@@ -864,6 +873,7 @@ static ncclResult_t scheduleCollTasksToPlan(
 }
 
 NCCL_PARAM(P2pLLThreshold, "P2P_LL_THRESHOLD", 16384);
+RCCL_PARAM(P2pNetThreshold, "P2P_NET_THRESHOLD", 131072);
 NCCL_PARAM(ChunkSize, "CHUNK_SIZE", 0);
 
 // Put p2p op in plan assuming there is sizeof(ncclDevWorkBatch) in batch budget
@@ -876,7 +886,7 @@ static ncclResult_t addP2pToPlan(
     int sendRank, void* sendAddr, ssize_t sendBytes,
     int recvRank, void* recvAddr, ssize_t recvBytes
   ) {
-  constexpr int connIndex = 1;
+  int connIndex = 1;
   bool selfSend = (sendRank == comm->rank);
   // recv: dir=0, send: dir=1
   void* addrs[2] = {recvAddr, sendAddr};
@@ -885,6 +895,10 @@ static ncclResult_t addP2pToPlan(
   bool network[2] = {false, false};
   bool proxySameProcess[2] = {true, true};
   uint8_t base = ncclP2pChannelBaseForRound(comm, p2pRound);
+
+  if (comm->p2pNet && sendBytes > rcclParamP2pNetThreshold() && recvBytes > rcclParamP2pNetThreshold())
+    connIndex = NCCL_CONN_IDX_P2P_NET;
+  
   if (!selfSend) {
     for (int part=0; part < nChannelsMax; part++) {
       int channelId = ncclP2pChannelForPart(comm->p2pnChannels, base, part);
@@ -978,6 +992,7 @@ static ncclResult_t addP2pToPlan(
   work->recvRank = recvRank;
   work->recvAddr = recvAddr;
   work->recvBytes = recvBytes==-1 ? 0 : recvBytes;
+  work->connIndex = connIndex;
 
   struct ncclProxyOp proxyOps[2] = {};
   int nProxyOps = selfSend ? 0 : 2;
@@ -992,6 +1007,7 @@ static ncclResult_t addP2pToPlan(
     op->pattern = dir ? ncclPatternSend : ncclPatternRecv;
     op->chunkSize = chunkSize[dir];
     op->reg = registered[dir];
+    op->connIndex = connIndex;
     // The following are modified per channel part in addWorkToChannels():
     // op->buffer, op->nbytes, op->nsteps = ...;
   }
@@ -1055,8 +1071,6 @@ static int calcP2pChannelCount(size_t totalSize, int minChannels, int maxChannel
   }
   return nChannels;
 }
-
-RCCL_PARAM(P2pNetThreshold, "P2P_NET_THRESHOLD", 131072);
 
 static ncclResult_t scheduleP2pTasksToPlan(
     struct ncclComm* comm, struct ncclKernelPlan* plan, struct ncclKernelPlanBudget* budget
@@ -1936,6 +1950,13 @@ static ncclResult_t calcCollChunking(
     proxyOp->specifics.collnetDirect.node = comm->node;
     if (info->func == ncclFuncAllGather || info->func == ncclFuncReduceScatter) {
       proxyOp->specifics.collnetDirect.sizePerRank = info->count*ncclTypeSize(info->datatype);
+    }
+  }
+
+  proxyOp->connIndex = 0;
+  if (info->protocol == NCCL_PROTO_SIMPLE && info->algorithm == NCCL_ALGO_RING) {
+    if (comm->useIntraNet && nBytes > rcclParamIntraNetThreshold()) {
+      proxyOp->connIndex = NCCL_CONN_IDX_P2P_NET;
     }
   }
 

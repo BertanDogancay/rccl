@@ -1482,15 +1482,10 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
   dim3 block = {(unsigned)plan->threadPerBlock, 1, 1};
   int smem = ncclShmemDynamicSize(comm->cudaArch);
   cudaStream_t launchStream = planner->streams->stream;
-  void* extra[] = {
-    CU_LAUNCH_PARAM_BUFFER_POINTER, plan->kernelArgs,
-    CU_LAUNCH_PARAM_BUFFER_SIZE, &plan->kernelArgsSize,
-    CU_LAUNCH_PARAM_END
-  };
-  void* args[] = {plan->kernelArgs, &plan->kernelArgsSize};
+  void* extra[] = {plan->kernelArgs, &plan->kernelArgsSize};
 
   if (planner->numStreams == 1 && !plan->persistent) {
-    CUDACHECK(hipExtLaunchKernel(plan->kernelFn, grid, block, args, 0, launchStream, NULL, comm->doneEvent, 0));
+    CUDACHECK(hipExtLaunchKernel(plan->kernelFn, grid, block, extra, 0, launchStream, NULL, comm->doneEvent, 0));
     comm->lastStream = planner->streams->stream;
     return ncclSuccess;
   }
@@ -1551,7 +1546,7 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
   #endif
   // Standard kernel launch
   //cuLaunchKernel(sym, grid.x, grid.y, grid.z, block.x, block.y, block.z, smem, launchStream, nullptr, extra);
-  CUDACHECK(cudaLaunchKernel(sym, grid, block, (void**)plan->kernelArgs, smem, launchStream));
+  CUDACHECK(cudaLaunchKernel(sym, grid, block, extra, smem, launchStream));
   return ncclSuccess;
 }
 

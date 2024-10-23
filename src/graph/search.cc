@@ -1030,10 +1030,12 @@ ncclResult_t ncclTopoCompute(ncclTopoSystem* system, struct ncclTopoGraph* graph
     // try to match 8P6L
     NCCLCHECK(parseChordalRing(system, graph));
     if (graph->nChannels) return ncclSuccess;
+    // try to match 8P alltoall connected GPUs
+    NCCLCHECK(parseA2a8P(system, graph, nullptr));
+    if (graph->nChannels) return ncclSuccess;
     // try to match Rome 4P2H
     const char *remap_str = getenv("NCCL_RINGS_REMAP");
     NCCLCHECK(parseRome4P2H(system, graph, remap_str));
-
     if (graph->nChannels) return ncclSuccess;
     // try to match 1H16P
     NCCLCHECK(parse1H16P(system, graph));
@@ -1312,10 +1314,10 @@ ncclResult_t ncclTopoGetNetDev(struct ncclComm* comm, int rank, struct ncclTopoG
     int pxnLevel = ncclPxnDisable(comm) == 1 ? 0 : ncclParamP2pPxnLevel();
     // See whether we can use the remote rank preferred device.
     if (ncclParamCrossNic() == 0 || (pxnLevel != 0)) {
-      // Find local NIC number close to local cudaDev
-      int cudaDev = comm->peerInfo[peerRank].cudaDev;
+      // Find local NIC number close to local nvmlDev
+      int nvmlDev = comm->peerInfo[peerRank].nvmlDev;
       int localRank;
-      if (ncclTopoDevToRank(comm->topo, cudaDev, &localRank) != ncclSuccess) return ncclSuccess;
+      if (ncclTopoDevToRank(comm->topo, nvmlDev, &localRank) != ncclSuccess) return ncclSuccess;
       NCCLCHECK(ncclTopoGetLocalNet(comm->topo, localRank, channelId, &netId, &netDev));
 
       // Check that device exists on our node

@@ -63,8 +63,6 @@ struct ncclRecvMem {
       uint64_t tail;
       char pad1[CACHE_LINE_SIZE-sizeof(uint64_t)];
       struct ncclConnFifo connFifo[NCCL_STEPS];
-      int sizesFifo[NCCL_STEPS];
-      int offsFifo[NCCL_STEPS];
       int flush; // For GDRCopy-based flush
     };
     char pad4[MEM_ALIGN];
@@ -383,6 +381,7 @@ struct ncclKernelPlanner {
 struct ncclPeerInfo {
   int rank;
   int cudaDev;
+  int nvmlDev;
   int gdrSupport;
   bool hasFineGrain;
   uint64_t hostHash;
@@ -429,7 +428,7 @@ struct ncclComm {
   int rank;    // my rank in the communicator
   int nRanks;  // number of GPUs in communicator
   int cudaDev; // my cuda device index
-  //int nvmlDev; // my nvml device index
+  int nvmlDev; // my nvml device index
   int compCap; // compute capability of the GPU
   int minCompCap, maxCompCap; // min/max compute capability in the communicator
   int64_t busId;   // my PCI bus ID in int format
@@ -610,6 +609,9 @@ struct ncclComm {
   // buffer registration cache
   struct ncclRegCache regCache;
   uint64_t endMagic;
+
+  // Unroll factor for comm [RCCL]
+  int unroll;
 };
 
 enum ncclLaunchMode {

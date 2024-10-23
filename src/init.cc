@@ -48,6 +48,7 @@
 #ifdef ENABLE_MSCCLPP
 #include "mscclpp/mscclpp_nccl.h"
 #endif
+#include "rocm_smi_wrap.h"
 // [/RCCL]
 
 #include "msccl/msccl_lifecycle.h"
@@ -91,6 +92,17 @@ static uint64_t hashUniqueId(ncclUniqueId const &id) {
     h += bytes[i];
   }
   return h;
+}
+
+ncclResult_t commSetUnrollFactor(struct ncclComm* comm) {
+  hipDeviceProp_t devProp;
+  CUDACHECK(hipGetDeviceProperties(&devProp, comm->cudaDev));
+  if(IsArchMatch(devProp.gcnArchName, "gfx908") || (IsArchMatch(devProp.gcnArchName, "gfx94")
+    && devProp.multiProcessorCount > 80))
+    comm->unroll = NCCL_UNROLL_2;
+  else
+    comm->unroll = NCCL_UNROLL_4;
+  return ncclSuccess;
 }
 
 #ifdef ENABLE_MSCCLPP
@@ -241,7 +253,7 @@ void *ncclCommThreadMain(void *arg) {
             (double)(td->timeStamp)/vega_gpu_rtc_freq, comm->rank, td->bid,
             fIdx, td->data_0, td->opCount, td->data_1);
         } else {
-          if (fIdx == ncclDevFuncId_P2p() || type == ncclCollTraceP2pElemType)
+          if (type == ncclCollTraceP2pElemType)
             sprintf(line, "## [%012.6f] [%02d:%02d] %06x-%06x", (double)(td->timeStamp)/vega_gpu_rtc_freq, comm->rank, td->bid, td->p2pOpCount[0], td->p2pOpCount[1]);
           else
             sprintf(line, "## [%012.6f] [%02d:%02d] %06lx", (double)(td->timeStamp)/vega_gpu_rtc_freq, comm->rank, td->bid, td->opCount);
@@ -557,11 +569,18 @@ static ncclResult_t commAlloc(struct ncclComm* comm, struct ncclComm* parent, in
   CUDACHECK(cudaGetDevice(&comm->cudaDev));
 
   NCCLCHECK(getBusId(comm->cudaDev, &comm->busId));
+  char busId[]="0000:00:00.0";
+  NCCLCHECK(int64ToBusId(comm->busId, busId));
+  NCCLCHECK(rocm_smi_init());
+  NCCLCHECK(rocm_smi_getDeviceIndexByPciBusId(busId, (unsigned int*)&comm->nvmlDev));
+
   comm->compCap = ncclCudaCompCap();
   TRACE(NCCL_INIT,"comm %p rank %d nranks %d cudaDev %d busId %lx compCap %d", comm, rank, ndev, comm->cudaDev, comm->busId, comm->compCap);
 
   // RCCL: create persistent stream for calloc
   CUDACHECK(hipStreamCreateWithFlags(&comm->sideStream, hipStreamNonBlocking));
+  // RCCL: determine and set unroll factor for comm
+  NCCLCHECK(commSetUnrollFactor(comm));
   comm->checkPointers = ncclParamCheckPointers() == 1 ? true : false;
   comm->dmaBufSupport = (dmaBufSupported(comm) == ncclSuccess) ? true : false;
 
@@ -755,7 +774,8 @@ static void showVersion() {
 
 static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, uint64_t commHash) {
   info->rank = comm->rank;
-  CUDACHECK(cudaGetDevice(&info->cudaDev));
+  info->cudaDev = comm->cudaDev;
+  info->nvmlDev = comm->nvmlDev;
   info->hostHash=getHostHash()+commHash;
   info->pidHash=getPidHash()+commHash;
   info->cuMemSupport = ncclCuMemEnable();
@@ -1280,12 +1300,21 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   if (ringGraph->nChannels > MAXCHANNELS/2)
     allGather3Data[rank].nc = 1;
   if (IsArchMatch(comm->topo->nodes[GPU].nodes[idx].gpu.gcn, "gfx94")) {
-    if (nranks == 2)
-      // NCCL_MIN_NCHANNELS=32
-      allGather3Data[rank].nc = 16;
-    else if (nranks == 4)
-      // NCCL_MIN_NCHANNELS=24
-      allGather3Data[rank].nc = 4;
+    // Multi-node MI300A
+    int managed = 0;
+    CUDACHECK(hipDeviceGetAttribute(&managed, hipDeviceAttributeDirectManagedMemAccessFromHost, 0));
+    if (managed && nNodes > 1) {
+      // This forces the minimum channels to 24
+      allGather3Data[rank].nc = 6;
+    } else {
+      // MI300X
+      if (nranks == 2)
+        // NCCL_MIN_NCHANNELS=32
+        allGather3Data[rank].nc = 16;
+      else if (nranks == 4)
+        // NCCL_MIN_NCHANNELS=24
+        allGather3Data[rank].nc = 4;
+    }
   }
 
   allGather3Data[rank].pivotA2AEnabled = comm->topo->pivotA2AEnabled && rcclParamPivotAlltoallEnable();
@@ -1828,11 +1857,11 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   comm->commHash = getHash(job->commId.internal, NCCL_UNIQUE_ID_BYTES);
 
   if (job->parent) {
-    INFO(NCCL_INIT,"ncclCommSplit comm %p rank %d nranks %d cudaDev %d busId %lx parent %p color %d key %d commId 0x%llx - Init START",
-    comm, comm->rank, comm->nRanks, comm->cudaDev, comm->busId, job->parent, job->color, job->key, (unsigned long long)hashUniqueId(job->commId));
+    INFO(NCCL_INIT,"ncclCommSplit comm %p rank %d nranks %d cudaDev %d nvmlDev %d busId %lx parent %p color %d key %d commId 0x%llx - Init START",
+    comm, comm->rank, comm->nRanks, comm->cudaDev, comm->nvmlDev, comm->busId, job->parent, job->color, job->key, (unsigned long long)hashUniqueId(job->commId));
   } else {
-    INFO(NCCL_INIT,"ncclCommInitRank comm %p rank %d nranks %d cudaDev %d busId %lx commId 0x%llx - Init START",
-    comm, comm->rank, comm->nRanks, comm->cudaDev, comm->busId, (unsigned long long)hashUniqueId(job->commId));
+    INFO(NCCL_INIT,"ncclCommInitRank comm %p rank %d nranks %d cudaDev %d nvmlDev %d busId %lx commId 0x%llx - Init START",
+    comm, comm->rank, comm->nRanks, comm->cudaDev, comm->nvmlDev, comm->busId, (unsigned long long)hashUniqueId(job->commId));
   }
 
   NCCLCHECKGOTO(initTransportsRank(comm, job->parent, timers), res, fail);
@@ -1911,11 +1940,11 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   }
 
   if (job->parent) {
-    INFO(NCCL_INIT,"ncclCommSplit comm %p rank %d nranks %d cudaDev %d busId %lx parent %p color %d key %d commId 0x%llx localSize %zi used %ld bytes on core %d - Init COMPLETE",
-    comm, comm->rank, comm->nRanks, comm->cudaDev, comm->busId, job->parent, job->color, job->key, (unsigned long long)hashUniqueId(job->commId), maxLocalSizeBytes, allocTracker[comm->cudaDev].totalAllocSize, sched_getcpu());
+    INFO(NCCL_INIT,"ncclCommSplit comm %p rank %d nranks %d cudaDev %d nvmlDev %d busId %lx parent %p color %d key %d commId 0x%llx localSize %zi used %ld bytes on core %d - Init COMPLETE",
+    comm, comm->rank, comm->nRanks, comm->cudaDev, comm->nvmlDev, comm->busId, job->parent, job->color, job->key, (unsigned long long)hashUniqueId(job->commId), maxLocalSizeBytes, allocTracker[comm->cudaDev].totalAllocSize, sched_getcpu());
   } else {
-    INFO(NCCL_INIT,"ncclCommInitRank comm %p rank %d nranks %d cudaDev %d busId %lx commId 0x%llx localSize %zi used %ld bytes on core %d - Init COMPLETE",
-    comm, comm->rank, comm->nRanks, comm->cudaDev, comm->busId, (unsigned long long)hashUniqueId(job->commId), maxLocalSizeBytes, allocTracker[comm->cudaDev].totalAllocSize, sched_getcpu());
+    INFO(NCCL_INIT,"ncclCommInitRank comm %p rank %d nranks %d cudaDev %d nvmlDev %d busId %lx commId 0x%llx localSize %zi used %ld bytes on core %d - Init COMPLETE",
+    comm, comm->rank, comm->nRanks, comm->cudaDev, comm->nvmlDev, comm->busId, (unsigned long long)hashUniqueId(job->commId), maxLocalSizeBytes, allocTracker[comm->cudaDev].totalAllocSize, sched_getcpu());
   }
   INFO(NCCL_INIT|NCCL_PROFILE,"Init timings: rank %d nranks %d total %.2f (kernels %.2f, bootstrap %.2f, allgathers %.2f, topo %.2f, graphs %.2f, connections %.2f, rest %.2f)", comm->rank, comm->nRanks, timers[TIMER_INIT_TOTAL]/1e9,
     timers[TIMER_INIT_KERNELS]/1e9, timers[TIMER_INIT_BOOTSTRAP]/1e9, timers[TIMER_INIT_ALLGATHER]/1e9, timers[TIMER_INIT_TOPO]/1e9, timers[TIMER_INIT_GRAPHS]/1e9, timers[TIMER_INIT_CONNECT]/1e9,

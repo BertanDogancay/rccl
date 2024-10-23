@@ -413,7 +413,7 @@ struct RunWorkBatch {
   }
 };
 
-template<int SpecializedFnId, typename SpecializedRunWorkBatch, bool COLLTRACE, int COLL_UNROLL>
+template<int SpecializedFnId, typename SpecializedRunWorkBatch, bool COLLTRACE>
 __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* args) {
   const int tid = threadIdx.x;
   int tn = blockDim.x;
@@ -523,15 +523,9 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
       SpecializedRunWorkBatch().run();
     } else {
 #ifdef USE_INDIRECT_FUNCTION_CALL
-      if (COLL_UNROLL == 4)
-        ncclDevFuncTable_4[ncclShmem.funcId]();
-      else
-        ncclDevFuncTable[ncclShmem.funcId]();
+      ncclDevFuncTable[ncclShmem.funcId]();
 #else
-      if (COLL_UNROLL == 4)
-        NCCL_CALL_FUNCTIONS_4(ncclShmem.funcId);
-      else
-        NCCL_CALL_FUNCTIONS(ncclShmem.funcId);
+      NCCL_CALL_FUNCTIONS(ncclShmem.funcId);
 #endif
     }
 
@@ -564,27 +558,19 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
 }
 
 __global__ void ncclDevKernel_Generic(ncclDevKernelArgs4K NCCL_GRID_CONSTANT const args4K);
-__global__ void ncclDevKernel_Generic_4(ncclDevKernelArgs4K NCCL_GRID_CONSTANT const args4K);
 #ifdef ENABLE_COLLTRACE
 __global__ void ncclDevKernelDebug_Generic(ncclDevKernelArgs4K NCCL_GRID_CONSTANT const args4K);
-__global__ void ncclDevKernelDebug_Generic_4(ncclDevKernelArgs4K NCCL_GRID_CONSTANT const args4K);
 #endif
 
 #ifdef USE_INDIRECT_FUNCTION_CALL
-#define DEFINE_ncclDevFunc(suffix, coll, redop, ty, algo, proto) \
+#define DEFINE_ncclDevFunc(suffix, coll, redop, ty, algo, proto, unroll) \
   __device__ void ncclDevFunc_##suffix() { \
-    RunWorkBatch<coll, ty, redop<ty>, algo, proto, /*COLL_UNROLL*/2>().run(); \
-  } \
-  __device__ void ncclDevFunc_##suffix##_4() { \
-    RunWorkBatch<coll, ty, redop<ty>, algo, proto, /*COLL_UNROLL*/4>().run(); \
+    RunWorkBatch<coll, ty, redop<ty>, algo, proto, unroll>().run(); \
   }
 #else
-#define DEFINE_ncclDevFunc(suffix, coll, redop, ty, algo, proto) \
+#define DEFINE_ncclDevFunc(suffix, coll, redop, ty, algo, proto, unroll) \
   __device__ __attribute__((noinline)) void ncclDevFunc_##suffix() { \
-    RunWorkBatch<coll, ty, redop<ty>, algo, proto, /*COLL_UNROLL*/2>().run(); \
-  } \
-  __device__ __attribute__((noinline)) void ncclDevFunc_##suffix##_4() { \
-    RunWorkBatch<coll, ty, redop<ty>, algo, proto, /*COLL_UNROLL*/4>().run(); \
+    RunWorkBatch<coll, ty, redop<ty>, algo, proto, unroll>().run(); \
   }
 #endif
 

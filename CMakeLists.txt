@@ -603,15 +603,24 @@ endforeach()
 
 # Generate device/host tables and all the collective functions that are going to be in librccl.so
 #==================================================================================================
-find_package(PythonInterp REQUIRED)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+if (NOT Python3_FOUND)
+  message(FATAL_ERROR "RCCL requires Python3 for generating host/device tables")
+endif()
+
 set(GEN_DIR "${HIPIFY_DIR}/gensrc")
 
 # Execute the python script to generate required files
 execute_process(
-    COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/src/device/generate.py ${GEN_DIR} ${IFC_ENABLED} ${COLLTRACE} ${ENABLE_MSCCL_KERNEL} ${ONLY_FUNCS}
+    COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/src/device/generate.py ${GEN_DIR} ${IFC_ENABLED} ${COLLTRACE} ${ENABLE_MSCCL_KERNEL} ${BUILD_LOCAL_GPU_TARGET_ONLY} ${ONLY_FUNCS}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    RESULT_VARIABLE result
+    RESULT_VARIABLE gen_py_result
+    ERROR_VARIABLE gen_py_error
 )
+if (gen_py_result)
+  message(SEND_ERROR "Error: ${gen_py_error}")
+  message(FATAL_ERROR "${CMAKE_SOURCE_DIR}/src/device/generate.py failed")
+endif()
 
 # Find the generated files in the output directory
 file(GLOB GENERATED_FILES "${GEN_DIR}/*")
@@ -839,6 +848,37 @@ set_property(TARGET rccl PROPERTY RULE_LAUNCH_LINK "${CMAKE_COMMAND} -E time")
 
 ## Setup librccl.so version
 rocm_set_soversion(rccl "1.0")
+
+if(NOT BUILD_SHARED_LIBS)
+  # To create a static lib with `-fgpu-rdc`, you need `--emit-static-lib` and `--hip-link`.
+  # You also need to invoke amdclang++ again to trigger GPU code generation.
+  set(static_link_flags
+    ${CXXFLAGS}
+    --hip-link
+    -fgpu-rdc
+    --emit-static-lib
+  )
+
+  # Find all the libraries we need to link at link time to include them in the clang link
+  # command line.
+  get_target_property(rccl_libs rccl LINK_LIBRARIES)
+  foreach(target ${rccl_libs})
+    if(TARGET ${target})
+      get_target_property(location ${target} LOCATION)
+      if(location)
+        LIST(APPEND static_link_flags -l${location})
+      endif()
+    endif()
+  endforeach()
+
+  foreach(target ${GPU_TARGETS})
+    list(APPEND static_link_flags --offload-arch=${target})
+  endforeach()
+  list(JOIN static_link_flags " " flags_str)
+
+  # Invoking amdclang++ this way will produce a static archive, so just override ARCHIVE_CREATE.
+  set(CMAKE_CXX_ARCHIVE_CREATE "<CMAKE_CXX_COMPILER> ${flags_str} -o <TARGET> <OBJECTS>")
+endif()
 
 # Install settings
 #==================================================================================================

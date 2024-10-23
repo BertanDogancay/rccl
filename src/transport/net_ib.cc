@@ -609,12 +609,24 @@ ncclResult_t ncclIbDevices(int* ndev) {
   return ncclSuccess;
 }
 
+// Introduce RCCL_FORCE_ENABLE_GDRDMA to force load GPU-NIC RDMA module
+// Use ONLY for debugging!
+RCCL_PARAM(ForceEnableGdrdma, "FORCE_ENABLE_GDRDMA", -1);
+
 // Detect whether GDR can work on a given NIC with the current CUDA device
 // Returns :
 // ncclSuccess : GDR works
 // ncclSystemError : no module or module loaded but not supported by GPU
 ncclResult_t ncclIbGdrSupport() {
   static int moduleLoaded = -1;
+
+  if (rcclParamForceEnableGdrdma() == 1) {
+    // RCCL_FORCE_ENABLE_GDRDMA=1 enables GPU-NIC RDMA only from RCCL-side
+    // Requires support from NIC driver modules
+    // Use ONLY for debugging!
+    moduleLoaded = 1;
+    INFO(NCCL_INIT, "RCCL_FORCE_ENABLE_GDRDMA = 1, so explicitly setting moduleLoaded = 1");
+  }
 
   if (moduleLoaded == -1) {
 #if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
@@ -983,8 +995,9 @@ ncclResult_t ncclIbInitCommDevBase(int ibDevN, struct ncclIbNetCommDevBase* base
   base->pd = ibDev->pd;
   pthread_mutex_unlock(&ibDev->lock);
 
-  // Recv requests can generate 2 completions (one for the post FIFO, one for the Recv).
-  NCCLCHECK(wrap_ibv_create_cq(&base->cq, ibDev->context, 2*MAX_REQUESTS*ncclParamIbQpsPerConn(), NULL, NULL, 0));
+  // CQ is sized to accommodate the max SQ + RQ WQE completions. If each SQ WQE could be signaled, then,
+  // for each QP, there can be 2*MAX_REQUESTS completions for SQ and MAX_REQUESTS completions for RQ. 
+  NCCLCHECK(wrap_ibv_create_cq(&base->cq, ibDev->context, 3*MAX_REQUESTS*ncclParamIbQpsPerConn(), NULL, NULL, 0));
 
   return ncclSuccess;
 }

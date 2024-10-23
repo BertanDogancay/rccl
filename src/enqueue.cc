@@ -30,37 +30,19 @@ struct ncclKernelMatch {
 };
 
 #ifdef ENABLE_COLLTRACE
-static ncclKernelMatch const ncclKerns[4] = {
+#define ncclGetKernelIndex(p_comm) ((p_comm)->collTraceThread ? 1 : 0)
+static ncclKernelMatch const ncclKerns[2] = {
   {(void *)ncclDevKernel_Generic, true},
-  {(void *)ncclDevKernel_Generic_4, true},
   {(void *)ncclDevKernelDebug_Generic, true},
-  {(void *)ncclDevKernelDebug_Generic_4, true},
 };
 #else
-static ncclKernelMatch const ncclKerns[2] = {
-  {(void*)ncclDevKernel_Generic, true},
-  {(void*)ncclDevKernel_Generic_4, true},
+#define ncclGetKernelIndex(p_comm) (0)
+static ncclKernelMatch const ncclKerns[1] = {
+  {(void*)ncclDevKernel_Generic, true}
 };
 #endif
-
-static ncclResult_t computeColl(struct ncclInfo* info /* input */, int* workFuncIndex, struct ncclWorkElem* work, struct ncclProxyOp* proxyOp /* output */);
 
 NCCL_PARAM(L1SharedMemoryCarveout, "L1_SHARED_MEMORY_CARVEOUT", 0);
-
-int ncclGetKernelIndex(struct ncclComm* comm) {
-#if ENABLE_COLLTRACE
-  int start_idx = comm->collTraceThread ? 2 : 0;
-#else
-  int start_idx = 0;
-#endif
-  hipDeviceProp_t devProp;
-  CUDACHECK(hipGetDeviceProperties(&devProp, comm->cudaDev));
-  if(IsArchMatch(devProp.gcnArchName, "gfx908") || (IsArchMatch(devProp.gcnArchName, "gfx94")
-    && devProp.multiProcessorCount > 80))
-    return start_idx;
-  else
-    return start_idx + 1;
-}
 
 // Returns maximum kernel stack size of all CUDA kernels
 ncclResult_t ncclInitKernelsForDevice(int cudaArch, size_t* maxStackSize) {
@@ -127,7 +109,6 @@ static inline size_t ncclFuncMaxSendRecvCount(ncclFunc_t func, int nRanks, size_
 /*****************************************************************************/
 /*       Launch system : synchronization and CUDA kernel launch              */
 /*****************************************************************************/
-
 static ncclResult_t addProxyOpIfNeeded(struct ncclComm* comm, struct ncclKernelPlan* plan, struct ncclProxyOp* op) {
   bool needed = true;
   NCCLCHECK(ncclProxySaveOp(comm, op, &needed));
@@ -504,7 +485,7 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
       }
 
       NCCLCHECK(getAlgoInfo(comm, &agg, collNetSupport, nvlsSupport, nTasksPerChannel, simInfo));
-      agg.devFuncId = ncclDevFuncId(agg.func, agg.opDev.op, agg.datatype, agg.algorithm, agg.protocol);
+      agg.devFuncId = ncclDevFuncId(agg.func, agg.opDev.op, agg.datatype, agg.algorithm, agg.protocol, comm->unroll);
 
       int isCollnet=0, isNvls=0;
       switch (agg.algorithm) {
@@ -907,7 +888,7 @@ static ncclResult_t addP2pToPlan(
         int peerRank = dir ? sendRank : recvRank;
         struct ncclConnector* conn = dir ? &channelPeers[peerRank]->send[connIndex]
                                          : &channelPeers[peerRank]->recv[connIndex];
-        protoLL[dir] &= conn->conn.buffs[NCCL_PROTO_LL] != nullptr;
+        protoLL[dir] &= conn->conn.buffs[NCCL_PROTO_LL] != nullptr && !IsArchMatch(comm->topo->nodes[GPU].nodes[0].gpu.gcn, "gfx12");
         network[dir] |= conn->transportComm == (dir ? &netTransport.send : &netTransport.recv);
         proxySameProcess[dir] &= conn->proxyConn.sameProcess;
       }
@@ -1017,7 +998,7 @@ static ncclResult_t addP2pToPlan(
     int channelId = ncclP2pChannelForPart(comm->p2pnChannels, base, part);
     plan->channelMask.masks[channelId/64] |= uint64_t(1)<<(channelId%64);
     // Add batch first.
-    addWorkBatchToPlan(comm, plan, channelId, ncclDevWorkTypeP2p, ncclDevFuncId_P2p(), workOffset, p2pRound);
+    addWorkBatchToPlan(comm, plan, channelId, ncclDevWorkTypeP2p, ncclDevFuncId_P2p(comm->unroll), workOffset, p2pRound);
     // Add proxy ops.
     for (int dir=0; dir < nProxyOps; dir++) {
       // Partition steps across channels.

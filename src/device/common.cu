@@ -18,17 +18,11 @@ struct RunWorkNop {
 };
 
 __launch_bounds__(NCCL_MAX_NTHREADS, 1) __global__ void ncclDevKernel_Generic(ncclDevKernelArgs4K NCCL_GRID_CONSTANT const args4K) {
-  ncclKernelMain<-1, RunWorkNop, /*COLLTRACE*/false, /*COLL_UNROLL*/2>(&args4K.args);
-}
-__launch_bounds__(NCCL_MAX_NTHREADS, 1) __global__ void ncclDevKernel_Generic_4(ncclDevKernelArgs4K NCCL_GRID_CONSTANT const args4K) {
-  ncclKernelMain<-1, RunWorkNop, /*COLLTRACE*/false, /*COLL_UNROLL*/4>(&args4K.args);
+  ncclKernelMain<-1, RunWorkNop, /*COLLTRACE*/false>(&args4K.args);
 }
 #ifdef ENABLE_COLLTRACE
 __launch_bounds__(NCCL_MAX_NTHREADS, 1) __global__ void ncclDevKernelDebug_Generic(ncclDevKernelArgs4K NCCL_GRID_CONSTANT const args4K) {
-  ncclKernelMain<-1, RunWorkNop, /*COLLTRACE*/true, /*COLL_UNROLL*/2>(&args4K.args);
-}
-__launch_bounds__(NCCL_MAX_NTHREADS, 1) __global__ void ncclDevKernelDebug_Generic_4(ncclDevKernelArgs4K NCCL_GRID_CONSTANT const args4K) {
-  ncclKernelMain<-1, RunWorkNop, /*COLLTRACE*/true, /*COLL_UNROLL*/4>(&args4K.args);
+  ncclKernelMain<-1, RunWorkNop, /*COLLTRACE*/true>(&args4K.args);
 }
 #endif
 

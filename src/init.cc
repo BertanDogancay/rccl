@@ -2368,6 +2368,10 @@ static ncclResult_t commCleanup(ncclComm_t comm) {
     NCCLCHECK(ncclTunerPluginUnload(comm));
   }
 
+  if (mscclEnabled() && (mscclEnabledForTopo || mscclForceEnabled())) {
+    NCCLCHECK(mscclTeardown(comm->rank));
+  }
+
   NCCLCHECK(commFree(comm));
 
   if (savedDevice != commDevice) {
@@ -2384,10 +2388,6 @@ static ncclResult_t commCleanup(ncclComm_t comm) {
   }
   NCCLCHECK(NpKit::Shutdown());
 #endif
-
-  if (mscclEnabled() && (mscclEnabledForTopo || mscclForceEnabled())) {
-    NCCLCHECK(mscclTeardown(comm->rank));
-  }
 
   return ncclSuccess;
 }

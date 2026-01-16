@@ -373,7 +373,7 @@ static inline ncclResult_t ncclCuMemFree(void *ptr) {
   CUCHECK(cuMemGetAddressRange(&base, &size, (CUdeviceptr)ptr));
   TRACE(NCCL_ALLOC, "CuMem Free Size %zu pointer %p handle 0x%llx", size, ptr, handle);
   CUCHECK(cuMemUnmap((CUdeviceptr)ptr, size));
-  // CUCHECK(cuMemRelease(handle));
+  CUCHECK(cuMemRelease(handle));
   CUCHECK(cuMemAddressFree((CUdeviceptr)ptr, size));
 
   int dev;
